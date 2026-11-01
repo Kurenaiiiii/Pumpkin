@@ -13,15 +13,20 @@ use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 use rand::RngExt;
 
-use crate::entity::ai::goal::{Controls, Goal};
-use crate::entity::mob::Mob;
-use crate::entity::{Entity, EntityBase, mob::MobEntity};
+use crate::entity::{
+    Entity, EntityBase,
+    ai::goal::{Controls, Goal},
+    mob::{Mob, MobEntity},
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PhantomMovementType {
     Circle = 0,
     Swoop = 1,
 }
+
+/// Vanilla `Phantom.TICKS_PER_FLAP`, `Mth.ceil(24.166098F)`.
+const TICKS_PER_FLAP: i32 = 25;
 
 pub struct PhantomEntity {
     pub mob_entity: MobEntity,
@@ -56,22 +61,14 @@ impl PhantomEntity {
             .set_has_no_gravity(true);
 
         {
-            let mut goal_selector = mob_arc
-                .mob_entity
-                .goals_selector
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let goal_selector = &mob_arc.mob_entity.goals_selector;
 
             goal_selector.add_goal(1, Box::new(StartAttackGoal::new(phantom_weak.clone())));
             goal_selector.add_goal(2, Box::new(SwoopMovementGoal::new(phantom_weak.clone())));
             goal_selector.add_goal(3, Box::new(CircleMovementGoal::new(phantom_weak.clone())));
 
             // Target selector
-            let mut target_selector = mob_arc
-                .mob_entity
-                .target_selector
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let target_selector = &mob_arc.mob_entity.target_selector;
             target_selector.add_goal(1, Box::new(FindTargetGoal::new(phantom_weak)));
             // Keep look goals at low priority
             goal_selector.add_goal(
@@ -183,6 +180,17 @@ impl PhantomEntity {
 }
 
 impl Mob for PhantomEntity {
+    fn mob_is_flapping(&self) -> bool {
+        let entity = self.get_entity();
+        // Vanilla `getUniqueFlapTickOffset` spreads the flaps by entity id.
+        entity
+            .entity_id
+            .wrapping_mul(3)
+            .wrapping_add(entity.tick_count.load(Ordering::Relaxed))
+            % TICKS_PER_FLAP
+            == 0
+    }
+
     fn get_mob_entity(&self) -> &MobEntity {
         &self.mob_entity
     }
@@ -293,6 +301,10 @@ impl Goal for CircleMovementGoal {
             || phantom.mob_entity.get_target().is_none()
     }
 
+    fn should_run_every_tick(&self) -> bool {
+        true
+    }
+
     fn should_continue(&mut self, _mob: &dyn Mob) -> bool {
         let Some(phantom) = self.phantom.upgrade() else {
             return false;
@@ -391,6 +403,10 @@ impl Goal for SwoopMovementGoal {
         };
         phantom.get_movement_type() == PhantomMovementType::Swoop
             && phantom.mob_entity.get_target().is_some()
+    }
+
+    fn should_run_every_tick(&self) -> bool {
+        true
     }
 
     fn should_continue(&mut self, _mob: &dyn Mob) -> bool {
@@ -523,6 +539,10 @@ impl Goal for StartAttackGoal {
         };
         let target = phantom.mob_entity.get_target();
         target.is_some_and(|t| t.get_entity().is_alive())
+    }
+
+    fn should_run_every_tick(&self) -> bool {
+        true
     }
 
     fn start(&mut self, _mob: &dyn Mob) {
